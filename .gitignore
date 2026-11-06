@@ -1,0 +1,13 @@
+venv/
+venv_models/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+models/*.onnx
+models/*.pt
+data/
+reports/
+settings.json
+.DS_Store
