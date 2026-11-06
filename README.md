@@ -1,6 +1,8 @@
 # ClassEye — Smart Attendance & Exam Monitoring
 
-**Technovate 2.0 · 12-hour hackathon · built on 6 Nov 2026**
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Python 3.10–3.12](https://img.shields.io/badge/python-3.10%E2%80%933.12-3776AB) ![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey) ![Runs offline](https://img.shields.io/badge/runs-100%25%20offline-2ea44f) ![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
+
+**Open-source · Technovate 2.0 · 12-hour hackathon · built on 6 Nov 2026**
 
 ClassEye turns any camera — a laptop webcam, a USB camera, a CCTV camera or a phone — into:
 
@@ -20,6 +22,7 @@ ClassEye turns any camera — a laptop webcam, a USB camera, a CCTV camera or a 
 | Classes | Unlimited classrooms (e.g. *AIML A Section*, *AIML B Section*), each with its own dataset. Create, rename, delete. |
 | Dataset | Add students (USN + name), capture face photos from the live camera, add photo files, or import a CSV/Excel list with a photo folder. A dataset check flags missing or unusable photos. |
 | Attendance | Multi-frame voting, look-alike protection and one-face-one-student matching for accuracy. Excel with face photos, absentees sheet and a per-class register with attendance %. |
+| Dashboard | Per-class attendance history, each student's %, **75% shortage alerts** (limit adjustable), "must attend next N classes" advice, and a one-click Excel summary for the HOD. |
 | Exam mode | Pose-based behaviour rules with time thresholds (a stretch or a glance is ignored), adjustable sensitivity, per-rule on/off, photo and close-up evidence, Excel incident report with a per-student summary. |
 
 ## How it works
@@ -63,6 +66,19 @@ tools/get_models.py    model download / export
 tests/                 automated tests
 ```
 
+## Open source & privacy
+
+ClassEye is free and open source under the **MIT License** (see [LICENSE](LICENSE)).
+The AI models keep their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+especially the **AGPL-3.0** terms of the YOLOv8 models used in exam mode.
+
+Everything runs **offline** on the college's own computer: no student face, photo or
+attendance record is uploaded anywhere. Student data lives only in the local `data/`
+folder, which is never committed to Git. Institutions using ClassEye should collect
+students' consent at enrolment.
+
+Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
+
 ## Credits
 
 - **AI assistance:** this project was built with help from **Claude (Anthropic)**, an AI coding assistant,
@@ -74,7 +90,7 @@ tests/                 automated tests
   [openpyxl](https://openpyxl.readthedocs.io), [NumPy](https://numpy.org), [pygrabber](https://github.com/andreaschiavinato/python_grabber)
 
 ## Team
-_Add team member names and roles here._
+Built at Technovate 2.0 by Sriram, Sinchana, Trisha and Suhan.
 
 ## Limits & next steps
 - Recognition needs faces at least ~26 px wide: use one camera per ~30 students or a 1080p+ camera.

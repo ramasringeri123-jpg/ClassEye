@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 
 from classeye.cameras import parse_source
 from classeye.classrooms import FaceGallery, build_gallery, read_image
-from classeye.reports import write_attendance, write_exam_report
+from classeye.history import class_report, load_sessions, overview, record_session
+from classeye.reports import write_attendance, write_exam_report, write_shortage_report
 from classeye.settings import reports_dir
 from .widgets import Card, Stat, VideoView, muted, row
 from .workers import CameraScan, Job
@@ -493,6 +494,7 @@ class AttendancePage(QWidget):
         self.s_present.set(0)
         self.s_absent.set(len(students))
         w.begin_attendance(self.app.repo.get(cid).name, gallery, students, self.seconds.value())
+        w.scan.class_id = cid
         self.stop_btn.setEnabled(True)
         self.app.set_live("ATTENDANCE")
 
@@ -527,6 +529,10 @@ class AttendancePage(QWidget):
             return
         self.last_report = path
         self.open_btn.setEnabled(True)
+        try:   # remember this session for the class dashboard
+            record_session(self.app.repo.get(scan.class_id), scan, self.subject.text().strip())
+        except (KeyError, AttributeError, OSError):
+            pass
         self.app.reports_changed()
         note = ""
         if s["too_small"] > s["frames"]:
@@ -736,3 +742,156 @@ class ReportsPage(QWidget):
     def _open(self, r, _c):
         if r >= 0 and self.table.item(r, 0):
             open_file(os.path.join(reports_dir(), self.table.item(r, 0).text()))
+
+
+# =============================================================================
+class DashboardPage(QWidget):
+    title = "Dashboard"
+    COLORS = {"Shortage": "#C0392B", "At risk": "#D68910", "Safe": "#1E8449"}
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.rows, self.sessions = [], []
+        lay = QVBoxLayout(self)
+        lay.setSpacing(14)
+
+        top = Card()
+        bar = QHBoxLayout()
+        self.class_box = QComboBox()
+        self.class_box.setMinimumWidth(220)
+        self.class_box.currentIndexChanged.connect(lambda _: self.refresh())
+        self.limit = QSpinBox()
+        self.limit.setRange(50, 100)
+        self.limit.setValue(75)
+        self.limit.setSuffix(" %")
+        self.limit.valueChanged.connect(lambda _: self.refresh())
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search USN or name")
+        self.search.textChanged.connect(lambda _: self._fill())
+        bar.addWidget(QLabel("Class"))
+        bar.addWidget(self.class_box)
+        bar.addSpacing(12)
+        bar.addWidget(QLabel("Minimum attendance"))
+        bar.addWidget(self.limit)
+        bar.addSpacing(12)
+        bar.addWidget(self.search, 1)
+        bar.addWidget(button("Refresh", "", self.refresh))
+        bar.addWidget(button("Export for HOD (Excel)", "Primary", self.export))
+        top.body.addLayout(bar)
+        lay.addWidget(top)
+
+        stats = QHBoxLayout()
+        self.s_sessions, self.s_avg = Stat("Classes held"), Stat("Average attendance")
+        self.s_short, self.s_risk, self.s_perfect = Stat("Shortage"), Stat("At risk (within 5%)"), Stat("100% attendance")
+        self.s_short.value.setStyleSheet("color:#C0392B;")
+        self.s_risk.value.setStyleSheet("color:#D68910;")
+        self.s_perfect.value.setStyleSheet("color:#1E8449;")
+        for s in (self.s_sessions, self.s_avg, self.s_short, self.s_risk, self.s_perfect):
+            stats.addWidget(s)
+        lay.addLayout(stats)
+
+        body = QHBoxLayout()
+        students = Card("Students")
+        self.alert = QLabel("")
+        self.alert.setWordWrap(True)
+        self.alert.setStyleSheet("background:#FBE5E3; color:#8E2B20; border-radius:6px; padding:8px 10px; font-weight:600;")
+        self.alert.hide()
+        students.body.addWidget(self.alert)
+        self.table = table(["USN", "Name", "Attended", "Held", "Attendance", "Status", "Advice"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        students.body.addWidget(self.table, 1)
+        body.addWidget(students, 3)
+
+        hist = Card("Recent classes")
+        self.hist = table(["Date & time", "Subject", "Present"])
+        self.hist.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        hist.body.addWidget(self.hist, 1)
+        body.addWidget(hist, 1)
+        lay.addLayout(body, 1)
+
+    def refresh_classes(self, classes):
+        cur = self.class_box.currentData()
+        self.class_box.blockSignals(True)
+        self.class_box.clear()
+        for c in classes:
+            self.class_box.addItem(c.name, c.id)
+        i = self.class_box.findData(cur)
+        if i >= 0:
+            self.class_box.setCurrentIndex(i)
+        self.class_box.blockSignals(False)
+        self.refresh()
+
+    def refresh(self):
+        cid = self.class_box.currentData()
+        self.rows, self.sessions = [], []
+        if cid:
+            try:
+                c = self.app.repo.get(cid)
+            except KeyError:
+                c = None
+            if c is not None:
+                self.sessions = load_sessions(c)
+                self.rows = class_report(self.app.repo.students(cid), self.sessions, self.limit.value())
+        ov = overview(self.rows, self.sessions)
+        self.s_sessions.set(ov["sessions"])
+        self.s_avg.set(f"{ov['average']}%")
+        self.s_short.set(ov["shortage"])
+        self.s_risk.set(ov["at_risk"])
+        self.s_perfect.set(ov["perfect"])
+        if ov["shortage"]:
+            names = ", ".join(r.name for r in self.rows if r.status == "Shortage")[:300]
+            self.alert.setText(f"⚠  {ov['shortage']} student(s) below {self.limit.value()}%: {names}")
+            self.alert.show()
+        else:
+            self.alert.hide()
+        self._fill()
+        self.hist.setRowCount(0)
+        for s in reversed(self.sessions[-30:]):
+            r = self.hist.rowCount()
+            self.hist.insertRow(r)
+            total = len(s["present"]) + len(s["absent"])
+            for j, v in enumerate([s["time"], s.get("subject", "") or "-", f"{len(s['present'])}/{total}"]):
+                self.hist.setItem(r, j, QTableWidgetItem(v))
+
+    def _fill(self):
+        q = self.search.text().strip().lower()
+        self.table.setRowCount(0)
+        for st in self.rows:
+            if q and q not in st.usn.lower() and q not in st.name.lower():
+                continue
+            if st.status == "Shortage":
+                advice = f"Must attend the next {st.need} class(es)"
+            elif st.held:
+                advice = f"Can miss {st.can_miss} more class(es)"
+            else:
+                advice = ""
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            vals = [st.usn, st.name, str(st.attended), str(st.held), f"{st.percent}%" if st.held else "-",
+                    st.status, advice]
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                if j in (4, 5) and st.status in self.COLORS:
+                    it.setForeground(QColor(self.COLORS[st.status]))
+                    if j == 5:
+                        f = it.font()
+                        f.setBold(True)
+                        it.setFont(f)
+                self.table.setItem(r, j, it)
+        self.table.setColumnWidth(0, 130)
+
+    def export(self):
+        cid = self.class_box.currentData()
+        if not cid or not self.sessions:
+            QMessageBox.information(self, "Dashboard", "Take attendance for this class at least once first.")
+            return
+        try:
+            path = write_shortage_report(self.app.repo.get(cid).name, self.rows, self.sessions,
+                                         self.limit.value(), reports_dir())
+        except PermissionError:
+            QMessageBox.warning(self, "Dashboard", "Close the Excel file that is open, then try again.")
+            return
+        self.app.reports_changed()
+        open_file(path)

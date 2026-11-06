@@ -386,6 +386,55 @@ def t_reports():
     globals()["_report_dir"] = out
 
 
+@check("dashboard: attendance %, shortage, classes needed / can miss, Excel")
+def t_dashboard():
+    from classeye.history import class_report, classes_can_miss, classes_needed, overview, record_session, load_sessions
+    from classeye.reports import write_shortage_report
+    assert classes_needed(6, 10, 75) == 6        # (6+6)/(10+6) = 75%
+    assert classes_needed(8, 10, 75) == 0
+    assert classes_can_miss(9, 10, 75) == 2      # 9/12 = 75%
+    assert classes_can_miss(7, 10, 75) == 0
+    root = tempfile.mkdtemp()
+    repo = ClassRepository(root)
+    c = repo.create("AIML B")
+    for usn, name in [("A1", "Asha"), ("A2", "Bharath"), ("A3", "Chitra"), ("A4", "New")]:
+        repo.add_student(c.id, usn, name)
+
+    class Scan:
+        def __init__(self, present, absent):
+            self._p, self._a = present, absent
+
+        def present(self):
+            return [Student(u, u) for u in self._p]
+
+        def absent(self):
+            return [Student(u, u) for u in self._a]
+
+    # 10 classes: A1 always, A2 7 times (70%), A3 8 times (80%: at risk), A4 joined later (2 of 2)
+    for i in range(10):
+        p = ["A1"] + (["A2"] if i < 7 else []) + (["A3"] if i < 8 else [])
+        a = [u for u in ("A2", "A3") if u not in p]
+        if i >= 8:
+            p.append("A4")
+        record_session(c, Scan(p, a), "Maths")
+    sessions = load_sessions(c)
+    assert len(sessions) == 10
+    rows = {r.usn: r for r in class_report(repo.students(c.id), sessions, 75)}
+    assert rows["A1"].percent == 100 and rows["A1"].status == "Safe"
+    assert rows["A2"].percent == 70 and rows["A2"].status == "Shortage" and rows["A2"].need == 2
+    assert rows["A3"].status == "At risk" and rows["A3"].can_miss == 0
+    assert rows["A4"].held == 2 and rows["A4"].percent == 100     # counted only from when enrolled
+    ordered = class_report(repo.students(c.id), sessions, 75)
+    assert ordered[0].usn == "A2"                                   # worst first
+    ov = overview(ordered, sessions)
+    assert ov["shortage"] == 1 and ov["at_risk"] == 1 and ov["perfect"] == 2 and ov["sessions"] == 10
+    path = write_shortage_report("AIML B", ordered, sessions, 75, root)
+    wb = load_workbook(path)
+    assert wb["Shortage list"].cell(row=2, column=2).value == "A2"
+    assert wb["Sessions"].max_row == 11
+    shutil.rmtree(root)
+
+
 @check("cameras: address parsing")
 def t_parse():
     assert parse_source("1") == 1
@@ -398,6 +447,6 @@ def t_parse():
 if __name__ == "__main__":
     print("ClassEye tests")
     for fn in [t_classrooms, t_import, t_gallery, t_attendance, t_decode, t_calm, t_phone, t_pocket,
-               t_sleeve, t_back, t_peep, t_side, t_pass, t_limits, t_identify, t_reports, t_parse]:
+               t_sleeve, t_back, t_peep, t_side, t_pass, t_limits, t_identify, t_reports, t_dashboard, t_parse]:
         fn()
     print(f"ALL {len(PASSED)} TESTS PASSED")

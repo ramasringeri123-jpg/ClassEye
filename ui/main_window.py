@@ -10,11 +10,12 @@ from PySide6.QtWidgets import (
 from classeye import __version__
 from classeye.classrooms import ClassRepository
 from classeye.settings import MODEL_FILES, model_path
-from .pages import AttendancePage, CamerasPage, ClassesPage, ExamPage, ReportsPage
+from .pages import AttendancePage, CamerasPage, ClassesPage, DashboardPage, ExamPage, ReportsPage
 from .theme import QSS
 from .workers import Models, VideoWorker
 
-NAV = [("📷", CamerasPage), ("👥", ClassesPage), ("✅", AttendancePage), ("🛡", ExamPage), ("📊", ReportsPage)]
+NAV = [("📷", CamerasPage), ("👥", ClassesPage), ("✅", AttendancePage), ("📈", DashboardPage),
+       ("🛡", ExamPage), ("📊", ReportsPage)]
 
 
 class MainWindow(QMainWindow):
@@ -98,7 +99,7 @@ class MainWindow(QMainWindow):
         main.addWidget(self.stack, 1)
         outer.addLayout(main, 1)
 
-        self.cameras, self.classes, self.attendance, self.exam, self.reports = self.pages
+        self.cameras, self.classes, self.attendance, self.dashboard, self.exam, self.reports = self.pages
         self.classes_changed()
         self.go(0)
         QTimer.singleShot(300, self._check_models)
@@ -110,6 +111,8 @@ class MainWindow(QMainWindow):
         self.page_title.setText(NAV[i][1].title)
         if self.pages[i] is self.reports:
             self.reports.refresh()
+        elif self.pages[i] is self.dashboard:
+            self.dashboard.refresh()
 
     def toast(self, msg, ms=5000):
         self.statusBar().showMessage(msg, ms)
@@ -122,12 +125,15 @@ class MainWindow(QMainWindow):
             self.live_pill.hide()
 
     def classes_changed(self):
-        page = getattr(self, "attendance", None)    # pages are still being created at startup
-        if page is not None:
-            page.refresh_classes(self.repo.list())
+        classes = self.repo.list()
+        for name in ("attendance", "dashboard"):   # pages may still be under construction at startup
+            page = getattr(self, name, None)
+            if page is not None:
+                page.refresh_classes(classes)
 
     def reports_changed(self):
         self.reports.refresh()
+        self.dashboard.refresh()
 
     def current_frame(self):
         return None if self.worker is None or self.worker.last_frame is None else self.worker.last_frame.copy()

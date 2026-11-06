@@ -221,3 +221,44 @@ def write_exam_report(incidents, folder, hall="Exam Hall", exam_name=""):
         sm.cell(row=i, column=3, value=", ".join(f"{k} x{v}" for k, v in Counter(items).items())).border = BOX
     wb.save(path)
     return path
+
+
+# =============================================================================
+def write_shortage_report(class_name, rows, sessions, threshold, folder):
+    """Attendance summary for the HOD: every student's %, shortage list first."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"Shortage_{_safe(class_name)}_{time.strftime('%Y-%m-%d_%H-%M')}.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attendance summary"
+    short = [r for r in rows if r.status == "Shortage"]
+    ws["A1"] = f"{class_name} - Attendance summary"
+    ws["A1"].font = Font(bold=True, size=15, color="1E2A4A")
+    ws["A2"] = (f"Date: {time.strftime('%d %b %Y')}    Classes held: {len(sessions)}    "
+                f"Minimum required: {threshold:g}%    Students in shortage: {len(short)}")
+    ws["A2"].font = BOLD
+    _head(ws, 4, ["Sl", "USN", "Name", "Attended", "Held", "Attendance %", "Status",
+                  "Must attend next", "Can still miss"], [5, 15, 26, 10, 8, 13, 14, 16, 14])
+    for i, r in enumerate(rows, 1):
+        vals = [i, r.usn, r.name, r.attended, r.held, r.percent, r.status,
+                r.need if r.status == "Shortage" else "", r.can_miss if r.status != "Shortage" else 0]
+        for j, v in enumerate(vals, 1):
+            c = ws.cell(row=4 + i, column=j, value=v)
+            c.border, c.alignment = BOX, LEFT if j == 3 else MID
+        ws.cell(row=4 + i, column=7).fill = {"Shortage": BAD, "At risk": WARN, "Safe": OK}.get(r.status, PatternFill())
+    ws.freeze_panes = "A5"
+    _print_wide(ws)
+
+    sh = wb.create_sheet("Shortage list")
+    _head(sh, 1, ["Sl", "USN", "Name", "Attendance %", "Must attend next"], [5, 15, 26, 13, 16])
+    for i, r in enumerate(short, 1):
+        for j, v in enumerate([i, r.usn, r.name, r.percent, r.need], 1):
+            sh.cell(row=1 + i, column=j, value=v).border = BOX
+
+    hist = wb.create_sheet("Sessions")
+    _head(hist, 1, ["#", "Date & time", "Subject", "Present", "Absent"], [5, 18, 22, 10, 10])
+    for i, s in enumerate(sessions, 1):
+        for j, v in enumerate([i, s["time"], s.get("subject", ""), len(s["present"]), len(s["absent"])], 1):
+            hist.cell(row=1 + i, column=j, value=v).border = BOX
+    wb.save(path)
+    return path
