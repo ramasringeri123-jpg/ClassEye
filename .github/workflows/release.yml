@@ -1,0 +1,95 @@
+# Builds the Windows installer on GitHub's servers.
+#   * Push a tag like v1.1.0  -> a public Release is created with ClassEye-Setup-1.1.0.exe and a portable zip.
+#   * "Run workflow" button on the Actions tab -> same build, files downloadable from the run page (no Release).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v=$(python -c "import classeye; print(classeye.__version__)")
+          if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match classeye/__init__.py version $v"; exit 1
+          fi
+
+      - name: Cache AI models
+        id: models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('tools/get_models.py') }}
+
+      - name: Download / export AI models
+        if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          python -m venv venv_models
+          venv_models\Scripts\python -m pip install --upgrade pip
+          venv_models\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          venv_models\Scripts\python tools\get_models.py
+
+      - name: Install app requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python tests\test_classeye.py
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build app, installer and portable zip
+        run: python tools\build.py --installer
+
+      - name: Smoke test (the packaged app imports and finds its files)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\ClassEye\ClassEye.exe)) { throw "exe missing" }
+          if (-not (Test-Path dist\ClassEye\_internal\assets\classeye.ico)) { throw "icon not packaged" }
+          Get-ChildItem dist\ClassEye\models
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClassEye-windows
+          path: |
+            dist/ClassEye-Setup-*.exe
+            dist/ClassEye-Portable-*.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ClassEye ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/ClassEye-Setup-*.exe
+            dist/ClassEye-Portable-*.zip
+          body: |
+            ## Download
+            * **ClassEye-Setup-….exe** - normal installer (recommended). Adds Start-menu and desktop icons. No admin password needed.
+            * **ClassEye-Portable-….zip** - no install: unzip anywhere (or a pen drive) and run `ClassEye.exe`.
+
+            Windows 10/11, 64-bit. The AI models are included, so no internet is needed after downloading.
+
+            **"Windows protected your PC"?** The app is not code-signed yet. Click **More info → Run anyway**.
