@@ -65,7 +65,8 @@ Uninstalling or updating never deletes these. The portable version keeps everyth
 ## Run from source (developers)
 
 **Windows:** `setup.bat` once (needs internet, ~10 min), then `run.bat`.
-**macOS:** `bash setup_mac.sh` once, then `source venv/bin/activate && python app.py`.
+**macOS:** `bash setup_mac.sh` once, then `bash run_mac.sh`.
+**After pulling an update:** just start with `run.bat` / `run_mac.sh` — any new library is installed automatically.
 **Tests:** `python tests/test_classeye.py`
 **Windows build:** `build_exe.bat` → `dist\ClassEye\ClassEye.exe`; `build_exe.bat --installer` also makes the Setup.exe and portable zip (needs [Inno Setup 6](https://jrsoftware.org/isdl.php)).
 

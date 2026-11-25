@@ -13,4 +13,4 @@ if [ ! -f models/yolov8n-pose.onnx ]; then
 else
   python tools/get_models.py --faces
 fi
-echo "Setup complete. Start ClassEye with:  source venv/bin/activate && python app.py"
+echo "Setup complete. Start ClassEye with:  bash run_mac.sh"
