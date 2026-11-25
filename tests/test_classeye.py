@@ -609,9 +609,39 @@ def t_parse():
     assert parse_source("") is None
 
 
+@check("install: data goes to the user folder, portable copy keeps it beside the exe")
+def t_paths():
+    import classeye.settings as cs
+    old = (getattr(sys, "frozen", None), sys.executable, os.environ.get("LOCALAPPDATA"))
+    tmp = tempfile.mkdtemp()
+    try:
+        assert cs.user_dir() == cs.app_dir()                     # from source: unchanged
+        prog = os.path.join(tmp, "Program Files", "ClassEye")
+        os.makedirs(prog)
+        sys.frozen, sys.executable = True, os.path.join(prog, "ClassEye.exe")
+        os.environ["LOCALAPPDATA"] = os.path.join(tmp, "Local")
+        assert cs.app_dir() == prog
+        assert cs.user_dir() != prog and cs.user_dir().endswith("ClassEye")
+        assert not cs.reports_dir().startswith(prog) and cs.reports_dir().endswith("ClassEye Reports")
+        assert cs.model_path("pose").startswith(os.path.join(prog, "models"))
+        open(os.path.join(prog, "portable.txt"), "w").close()
+        assert cs.user_dir() == prog and cs.reports_dir() == os.path.join(prog, "reports")
+    finally:
+        if old[0] is None:
+            del sys.frozen
+        else:
+            sys.frozen = old[0]
+        sys.executable = old[1]
+        if old[2] is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old[2]
+        shutil.rmtree(tmp)
+
+
 if __name__ == "__main__":
     print("ClassEye tests")
     for fn in [t_classrooms, t_import, t_gallery, t_attendance, t_unknown, t_not_unknown, t_decode, t_calm, t_phone, t_pocket,
-               t_sleeve, t_back, t_peep, t_side, t_pass, t_hand_closeup, t_lap, t_reaches, t_paper, t_wording, t_limits, t_identify, t_reports, t_dashboard, t_class_attentive, t_class_sleep, t_class_distracted, t_class_report, t_parse]:
+               t_sleeve, t_back, t_peep, t_side, t_pass, t_hand_closeup, t_lap, t_reaches, t_paper, t_wording, t_limits, t_identify, t_reports, t_dashboard, t_class_attentive, t_class_sleep, t_class_distracted, t_class_report, t_parse, t_paths]:
         fn()
     print(f"ALL {len(PASSED)} TESTS PASSED")

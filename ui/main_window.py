@@ -1,7 +1,8 @@
 """Main window: sidebar navigation, top status bar, shared camera worker."""
 import os
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from classeye import __version__
 from classeye.classrooms import ClassRepository
-from classeye.settings import MODEL_FILES, model_path
+from classeye.settings import MODEL_FILES, asset_path, model_path
 from .pages import AttendancePage, CamerasPage, ClassesPage, ClassModePage, DashboardPage, ExamPage, ReportsPage
 from .theme import QSS
 from .workers import Models, VideoWorker
@@ -43,11 +44,21 @@ class MainWindow(QMainWindow):
         side.setFixedWidth(230)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 12)
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(18, 18, 0, 0)
+        brand_row.setSpacing(0)
+        logo = QLabel()
+        logo.setPixmap(QIcon(asset_path("classeye.png")).pixmap(QSize(34, 34)))
+        logo.setFixedSize(34, 34)
         brand = QLabel("ClassEye")
         brand.setObjectName("Brand")
+        brand.setStyleSheet("padding: 0 0 0 10px;")
+        brand_row.addWidget(logo)
+        brand_row.addWidget(brand)
+        brand_row.addStretch(1)
         sub = QLabel("Smart Attendance & Exam AI")
         sub.setObjectName("BrandSub")
-        sl.addWidget(brand)
+        sl.addLayout(brand_row)
         sl.addWidget(sub)
         self.nav_group = QButtonGroup(self)
         self.stack = QStackedWidget()
@@ -144,7 +155,8 @@ class MainWindow(QMainWindow):
         if missing:
             QMessageBox.warning(self, "AI models missing",
                                 "These model files are missing from the 'models' folder:\n\n" + "\n".join(missing) +
-                                "\n\nRun setup.bat (or: python tools/get_models.py) once with internet.")
+                                "\n\nIf you installed ClassEye, reinstall it from the Releases page.\n"
+                                "If you run it from source: run setup.bat (or python tools/get_models.py) once with internet.")
 
     # ------------------------------------------------------------------
     def connect_camera(self, source, name):

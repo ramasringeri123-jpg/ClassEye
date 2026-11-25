@@ -1,31 +1,74 @@
-"""Paths and tunable settings. Settings live in settings.json next to the app."""
+"""Paths and tunable settings.
+
+Where things live
+  * Running from source (python app.py): everything stays in the project folder, as before.
+  * Installed app (ClassEye-Setup.exe): the program folder is read-only, so
+      - student data + settings  ->  %LOCALAPPDATA%\\ClassEye        (not synced to OneDrive)
+      - Excel reports            ->  Documents\\ClassEye Reports      (easy for teachers to find)
+  * Portable copy: put an empty file named `portable.txt` next to ClassEye.exe (or keep an
+    existing `data` folder there) and everything stays beside the .exe.
+"""
 import json
 import os
 import sys
 from dataclasses import asdict, dataclass, fields
 
 
-def base_dir() -> str:
-    """Folder of the .exe when packaged, else the project root."""
+def app_dir() -> str:
+    """Folder of the program itself (read-only when installed)."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def asset_path(name: str) -> str:
+    return os.path.join(getattr(sys, "_MEIPASS", app_dir()), "assets", name)
+
+
+def _portable() -> bool:
+    if not getattr(sys, "frozen", False):
+        return True
+    d = app_dir()
+    return os.path.exists(os.path.join(d, "portable.txt")) or os.path.isdir(os.path.join(d, "data"))
+
+
+def user_dir() -> str:
+    """Writable folder for student data and settings."""
+    if _portable():
+        return app_dir()
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    elif sys.platform == "darwin":
+        root = os.path.expanduser("~/Library/Application Support")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(root, "ClassEye")
+
+
+base_dir = user_dir          # older name
+
+
 def data_dir() -> str:
-    return os.path.join(base_dir(), "data")
+    return os.path.join(user_dir(), "data")
 
 
 def classes_dir() -> str:
     return os.path.join(data_dir(), "classes")
 
 
+def settings_path() -> str:
+    return os.path.join(user_dir(), "settings.json")
+
+
 def models_dir() -> str:
-    return os.path.join(base_dir(), "models")
+    """Models shipped with the program (a user-installed copy in user_dir()/models wins)."""
+    return os.path.join(app_dir(), "models")
 
 
 def reports_dir() -> str:
-    return os.path.join(base_dir(), "reports")
+    if _portable():
+        return os.path.join(app_dir(), "reports")
+    return os.path.join(os.path.expanduser("~"), "Documents", "ClassEye Reports")
 
 
 MODEL_FILES = {
@@ -37,7 +80,8 @@ MODEL_FILES = {
 
 
 def model_path(key: str) -> str:
-    return os.path.join(models_dir(), MODEL_FILES[key])
+    own = os.path.join(user_dir(), "models", MODEL_FILES[key])   # e.g. an upgraded, bigger YOLO
+    return own if os.path.exists(own) else os.path.join(models_dir(), MODEL_FILES[key])
 
 
 @dataclass
@@ -81,7 +125,7 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         s = cls()
-        path = os.path.join(base_dir(), "settings.json")
+        path = settings_path()
         if os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -95,7 +139,7 @@ class Settings:
         return s
 
     def save(self) -> None:
-        with open(os.path.join(base_dir(), "settings.json"), "w", encoding="utf-8") as f:
+        with open(settings_path(), "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
 
     def timing_factor(self) -> float:

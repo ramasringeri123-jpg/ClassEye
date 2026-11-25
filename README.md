@@ -1,4 +1,8 @@
-# ClassEye — Smart Attendance & Exam Monitoring
+<p align="center"><img src="assets/classeye.png" width="128" alt="ClassEye logo"></p>
+
+<h1 align="center">ClassEye — Smart Attendance & Exam Monitoring</h1>
+
+<p align="center"><a href="https://github.com/ramasringeri123-jpg/ClassEye/releases/latest"><b>⬇ Download for Windows</b></a></p>
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Python 3.10–3.12](https://img.shields.io/badge/python-3.10%E2%80%933.12-3776AB) ![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey) ![Runs offline](https://img.shields.io/badge/runs-100%25%20offline-2ea44f) ![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
@@ -39,12 +43,34 @@ flowchart LR
     RULES --> X2[Exam_Report.xlsx + evidence photos]
 ```
 
-## Run it
+## Download & install (Windows 10/11)
+
+1. Open the [latest release](https://github.com/ramasringeri123-jpg/ClassEye/releases/latest).
+2. Download **`ClassEye-Setup-<version>.exe`** and run it. No admin password needed; the AI models are included.
+3. Open **ClassEye** from the Start menu or the desktop icon.
+
+> **"Windows protected your PC"?** ClassEye isn't code-signed yet. Click **More info → Run anyway**.
+
+No install allowed on the computer? Download **`ClassEye-Portable-<version>.zip`**, unzip it (even onto a pen drive) and run `ClassEye.exe`.
+
+**Where your data is kept (installed version)**
+
+| What | Folder |
+|---|---|
+| Classes, students, face photos, settings | `%LOCALAPPDATA%\ClassEye` |
+| Excel reports and evidence photos | `Documents\ClassEye Reports` |
+
+Uninstalling or updating never deletes these. The portable version keeps everything inside its own folder.
+
+## Run from source (developers)
 
 **Windows:** `setup.bat` once (needs internet, ~10 min), then `run.bat`.
 **macOS:** `bash setup_mac.sh` once, then `source venv/bin/activate && python app.py`.
 **Tests:** `python tests/test_classeye.py`
-**Windows .exe:** `build_exe.bat` → `dist\ClassEye\ClassEye.exe`
+**Windows build:** `build_exe.bat` → `dist\ClassEye\ClassEye.exe`; `build_exe.bat --installer` also makes the Setup.exe and portable zip (needs [Inno Setup 6](https://jrsoftware.org/isdl.php)).
+
+**Publishing a new version:** raise `__version__` in `classeye/__init__.py`, commit, then push a tag such as `v1.1.0`.
+GitHub Actions ([release.yml](.github/workflows/release.yml)) builds the installer and portable zip and attaches them to a new Release.
 
 Phone as camera: install **IP Webcam** (Android), press *Start server*, then *Scan for cameras*
 in ClassEye or type the phone's address (e.g. `192.168.43.1:8080`).
@@ -63,7 +89,12 @@ classeye/tracking.py   student tracker
 classeye/exam.py       malpractice rules + evidence
 classeye/reports.py    Excel reports
 ui/                    PySide6 desktop interface
+classeye/attention.py  class mode (attention estimate)
 tools/get_models.py    model download / export
+tools/build.py         Windows app + installer + portable zip
+installer/             Inno Setup installer script
+assets/                logo and app icon
+.github/workflows/     automatic release build
 tests/                 automated tests
 ```
 
@@ -74,8 +105,8 @@ The AI models keep their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_
 especially the **AGPL-3.0** terms of the YOLOv8 models used in exam mode.
 
 Everything runs **offline** on the college's own computer: no student face, photo or
-attendance record is uploaded anywhere. Student data lives only in the local `data/`
-folder, which is never committed to Git. Institutions using ClassEye should collect
+attendance record is uploaded anywhere. Student data lives only on that computer
+(`%LOCALAPPDATA%\ClassEye`, or the `data/` folder when run from source), never in Git. Institutions using ClassEye should collect
 students' consent at enrolment.
 
 Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
