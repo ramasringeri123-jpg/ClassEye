@@ -173,6 +173,43 @@ def t_attendance():
 
 
 # ---------------------------------------------------------------------------
+@check("attendance: an unknown person in class is detected and reported once")
+def t_unknown():
+    g, ids, studs = fake_gallery(6)
+    scan = AttendanceScan("AIML A", g, studs, 0.40, 0.05, 3)
+    frame = np.full((720, 1280, 3), 120, np.uint8)
+    visitor = unit(rng.normal(size=128))
+    for f in range(8):
+        faces = [DetectedFace((40 + 140 * k, 80, 60, 60), 0.9, None, jitter(ids[k])) for k in range(4)]
+        faces.append(DetectedFace((900, 300, 70, 70), 0.9, None, jitter(visitor, 0.1)))     # same outsider
+        if f < 3:
+            faces.append(DetectedFace((1100, 500, 60, 60), 0.9, None, unit(rng.normal(size=128))))  # brief noise
+        labels = scan.feed(frame, faces)
+    assert labels[4][1] == "UNKNOWN"
+    unknown = scan.unknown_people()
+    assert len(unknown) == 1 and unknown[0].sightings == 8 and unknown[0].snapshot is not None, unknown
+    assert scan.summary()["unknown_people"] == 1
+    assert {m.usn for m in scan.present()} == {studs[k].usn for k in range(4)}     # students unaffected
+    out = tempfile.mkdtemp()
+    path, _ = write_attendance(scan, out)
+    wb = load_workbook(path)
+    assert "Unknown persons" in wb.sheetnames and wb["Unknown persons"].cell(row=2, column=4).value == 8
+    assert len(wb["Unknown persons"]._images) == 1
+    shutil.rmtree(out)
+
+
+@check("attendance: an enrolled student at a bad angle is NOT called unknown")
+def t_not_unknown():
+    g, ids, studs = fake_gallery(4)
+    scan = AttendanceScan("AIML A", g, studs, 0.40, 0.05, 3)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    for f in range(8):
+        # a poor view of student 0: weaker match, but still clearly closer to them than to anyone else
+        weak = unit(ids[0] + 0.9 * rng.normal(size=128) / np.sqrt(128) * 4)
+        scan.feed(frame, [DetectedFace((10, 10, 60, 60), 0.9, None, weak)])
+    assert scan.unknown_people() == [], [u.sightings for u in scan.unknown_people()]
+
+
 @check("detector: YOLO output decoding (detection + pose)")
 def t_decode():
     out = np.zeros((1, 84, 8400), np.float32)
@@ -225,14 +262,19 @@ def body(box, nose_dx=0.0, face=True, flip=False, wrists=None, hips=True, sw=60)
 
 
 class Fake:
+    """Stands in for a YOLO model. Full-frame calls get `out`; close-up crops get `crop_out`."""
+
     def __init__(self):
         self.out = []
+        self.crop_out = []
 
     def __call__(self, frame, classes=None, conf=None):
-        return self.out
+        full = frame.shape[:2] == (720, 1280)
+        dets = self.out if full else self.crop_out
+        return [d for d in dets if classes is None or d.cls in classes] if not full or classes else dets
 
 
-def simulate(scene, seconds=8, fps=10, phones=None, enabled=None):
+def simulate(scene, seconds=8, fps=10, phones=None, enabled=None, crop=None):
     pose, obj = Fake(), Fake()
     folder = tempfile.mkdtemp()
     mon = ExamMonitor(Settings(), pose, obj, out_dir=folder, enabled=enabled)
@@ -241,6 +283,7 @@ def simulate(scene, seconds=8, fps=10, phones=None, enabled=None):
         t = i / fps
         pose.out = scene(t)
         obj.out = phones(t) if phones else []
+        obj.crop_out = crop(t) if crop else []
         mon.process(frame.copy(), now=1000 + t)
     return mon, folder
 
@@ -325,6 +368,56 @@ def t_pass():
     shutil.rmtree(d)
 
 
+@check("exam: small phone found only in the hand close-up")
+def t_hand_closeup():
+    # the whole-frame scan misses it; the close-up of student B's hands finds it
+    m, d = simulate(lambda t: [body(A), body(B)], 4,
+                    crop=lambda t: [Det(np.array([40, 40, 70, 90], np.float32), 0.5, 67)] if t > 1 else [])
+    assert "PHONE" in kinds(m), kinds(m)
+    shutil.rmtree(d)
+
+
+@check("exam: phone hidden in the lap (head bowed, hands together, low)")
+def t_lap():
+    def scene(t):
+        if t < 3:
+            return [body(A), body(B)]
+        a = body(A, wrists={9: (186, 520), 10: (174, 522)})     # both hands together down in the lap
+        a.kpts[0, 1] += 30                                      # nose drops: head bowed
+        return [a, body(B)]
+    m, d = simulate(scene, 9)
+    assert "PHONE_LAP" in kinds(m), kinds(m)
+    shutil.rmtree(d)
+
+
+@check("exam: repeated quick reaches to the pocket count as a chit")
+def t_reaches():
+    def scene(t):
+        quick = (2.0 <= t < 2.7) or (5.0 <= t < 5.7)            # two 0.7 s reaches, each shorter than 1.2 s
+        return [body(A, wrists={9: (204, 545)} if quick else None), body(B)]
+    m, d = simulate(scene, 8)
+    assert kinds(m) == ["CHIT"], kinds(m)
+    shutil.rmtree(d)
+
+
+@check("exam: paper seen at a hand in the pocket is reported quickly")
+def t_paper():
+    def scene(t):
+        return [body(A, wrists={9: (204, 545)} if t > 2 else None), body(B)]
+    # crop coordinates: the paper sits right at the pocket hand inside A's hand close-up
+    def crop(t):
+        return [Det(np.array([110, 160, 140, 180], np.float32), 0.5, 73)] if t > 2 else []
+    m, d = simulate(scene, 3.0, crop=crop)
+    assert "CHIT" in kinds(m) and m.incidents[0].time - 1000 < 2.9, (kinds(m), [i.time for i in m.incidents])
+    shutil.rmtree(d)
+
+
+@check("exam: every alert is worded as a suspicion")
+def t_wording():
+    from classeye.exam import RULES
+    assert all(title.startswith("Suspicious") for title, _ in RULES.values())
+
+
 @check("exam: alert repeat limit and disabled rules")
 def t_limits():
     m, d = simulate(lambda t: [body(A), body(B)], 30,
@@ -380,7 +473,7 @@ def t_reports():
     m.incidents[0].usn, m.incidents[0].name, m.incidents[0].class_name = "4AL22AI001", "Asha", "AIML B"
     p = write_exam_report(m.incidents, out, "Hall 2", "IA-2")
     ex = load_workbook(p)["Incidents"]
-    assert ex.cell(row=5, column=3).value == "4AL22AI001" and ex.cell(row=5, column=6).value == "Using a mobile phone"
+    assert ex.cell(row=5, column=3).value == "4AL22AI001" and ex.cell(row=5, column=6).value == "Suspicious: mobile phone use"
     assert len(ex._images) == 1
     print("        sample files:", os.path.basename(path), "|", os.path.basename(p))
     globals()["_report_dir"] = out
@@ -435,6 +528,78 @@ def t_dashboard():
     shutil.rmtree(root)
 
 
+# ---------------------------------------------------------------------------
+def run_class(scene, seconds, gallery=None, face=None):
+    from classeye.attention import AttentionMonitor
+    pose = Fake()
+    mon = AttentionMonitor(Settings(), pose, face, gallery, "AIML B")
+    frame = np.full((720, 1280, 3), 90, np.uint8)
+    summ = None
+    for i in range(int(seconds * 10)):
+        pose.out = scene(i / 10)
+        _, summ = mon.process(frame.copy(), now=1000 + i / 10)
+    return mon, {r.key: r for r in summ["students"]}, summ
+
+
+C1, C2, C3 = (100, 200, 260, 560), (300, 200, 460, 560), (500, 200, 660, 560)
+
+
+@check("class mode: attentive class scores high")
+def t_class_attentive():
+    _, rows, summ = run_class(lambda t: [body(C1), body(C2), body(C3)], 30)
+    assert all(r.percent > 95 for r in rows.values()) and summ["class_percent"] > 95, summ
+    assert all(r.level == "Good" for r in rows.values())
+
+
+@check("class mode: a sleeping student is marked Poor (sleeping)")
+def t_class_sleep():
+    def scene(t):
+        a = body(C1)
+        if t > 5:
+            a.kpts[0:5, 1] += 55          # head dropped right down and kept still
+        return [a, body(C2), body(C3)]
+    mon, rows, summ = run_class(scene, 100)
+    r = rows["#1"]
+    assert r.by_state["Sleeping"] >= 60 and r.level == "Poor (sleeping)", (r.by_state, r.level)
+    assert rows["#2"].level == "Good"
+    assert summ["sleeping_now"] == 1
+
+
+@check("class mode: looking away from the board counts as distracted, writing as half")
+def t_class_distracted():
+    def scene(t):
+        return [body(C1, nose_dx=0.9 if t > 4 else 0), body(C2), body(C3)]
+    _, rows, _ = run_class(scene, 30)
+    assert rows["#1"].percent < 40 and rows["#1"].by_state["Distracted"] > 20, rows["#1"].by_state
+
+    def writing(t):
+        a = body(C1)
+        a.kpts[0:3, 1] += 25              # head bowed a little: writing notes
+        return [a, body(C2), body(C3)]
+    _, rows, _ = run_class(writing, 30)
+    assert 40 <= rows["#1"].percent <= 70 and rows["#1"].level == "Average", rows["#1"].percent
+
+
+@check("class mode: students named by face, Excel report with chart")
+def t_class_report():
+    from classeye.reports import write_class_report
+    g, ids, studs = fake_gallery(3)
+
+    class FaceStub:
+        def detect(self, frame):
+            return [DetectedFace((160, 230, 40, 40), 0.9, None, jitter(ids[1], 0.05))]
+    mon, rows, summ = run_class(lambda t: [body(C1), body(C2), body(C3)], 150, gallery=g, face=FaceStub())
+    assert studs[1].usn in rows and rows[studs[1].usn].name == studs[1].name
+    out = tempfile.mkdtemp()
+    path = write_class_report("AIML B", summ, mon.timeline_rows(), out, "Maths")
+    wb = load_workbook(path)
+    ws = wb["Attention"]
+    usns = [ws.cell(row=r, column=2).value for r in range(6, ws.max_row + 1)]
+    assert studs[1].usn in usns and len(mon.timeline_rows()) == 3
+    assert len(wb["Timeline"]._charts) == 1
+    shutil.rmtree(out)
+
+
 @check("cameras: address parsing")
 def t_parse():
     assert parse_source("1") == 1
@@ -446,7 +611,7 @@ def t_parse():
 
 if __name__ == "__main__":
     print("ClassEye tests")
-    for fn in [t_classrooms, t_import, t_gallery, t_attendance, t_decode, t_calm, t_phone, t_pocket,
-               t_sleeve, t_back, t_peep, t_side, t_pass, t_limits, t_identify, t_reports, t_dashboard, t_parse]:
+    for fn in [t_classrooms, t_import, t_gallery, t_attendance, t_unknown, t_not_unknown, t_decode, t_calm, t_phone, t_pocket,
+               t_sleeve, t_back, t_peep, t_side, t_pass, t_hand_closeup, t_lap, t_reaches, t_paper, t_wording, t_limits, t_identify, t_reports, t_dashboard, t_class_attentive, t_class_sleep, t_class_distracted, t_class_report, t_parse]:
         fn()
     print(f"ALL {len(PASSED)} TESTS PASSED")

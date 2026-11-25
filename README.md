@@ -21,9 +21,10 @@ ClassEye turns any camera — a laptop webcam, a USB camera, a CCTV camera or a 
 | Cameras | Auto-discovers every camera on the computer (Device Manager) **and** Wi-Fi cameras on the network (phones with IP Webcam/DroidCam, RTSP CCTV). Manual address also supported. |
 | Classes | Unlimited classrooms (e.g. *AIML A Section*, *AIML B Section*), each with its own dataset. Create, rename, delete. |
 | Dataset | Add students (USN + name), capture face photos from the live camera, add photo files, or import a CSV/Excel list with a photo folder. A dataset check flags missing or unusable photos. |
-| Attendance | Multi-frame voting, look-alike protection and one-face-one-student matching for accuracy. Excel with face photos, absentees sheet and a per-class register with attendance %. |
+| Attendance | Multi-frame voting, look-alike protection and one-face-one-student matching for accuracy. **Unknown people** (anyone not in the class dataset) are flagged live and listed with photos. Excel with face photos, absentees, unknown persons and a per-class register with attendance %. |
 | Dashboard | Per-class attendance history, each student's %, **75% shortage alerts** (limit adjustable), "must attend next N classes" advice, and a one-click Excel summary for the HOD. |
-| Exam mode | Pose-based behaviour rules with time thresholds (a stretch or a glance is ignored), adjustable sensitivity, per-rule on/off, photo and close-up evidence, Excel incident report with a per-student summary. |
+| Class mode | Estimates each student's **attention %** during a lecture from head direction and posture (attentive, writing, distracted, sleeping). Sleeping students are marked *Poor attention*. Excel report with a minute-by-minute class attention chart. |
+| Exam mode | Every alert is reported as **suspicious** for the invigilator to check. Close-up checks of each student's hand area catch small phones, plus a lap-phone posture rule and repeated-reach / paper-in-hand chit rules. Pose-based behaviour rules with time thresholds (a stretch or a glance is ignored), adjustable sensitivity, per-rule on/off, photo and close-up evidence, Excel incident report with a per-student summary. |
 
 ## How it works
 

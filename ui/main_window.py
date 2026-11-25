@@ -10,12 +10,12 @@ from PySide6.QtWidgets import (
 from classeye import __version__
 from classeye.classrooms import ClassRepository
 from classeye.settings import MODEL_FILES, model_path
-from .pages import AttendancePage, CamerasPage, ClassesPage, DashboardPage, ExamPage, ReportsPage
+from .pages import AttendancePage, CamerasPage, ClassesPage, ClassModePage, DashboardPage, ExamPage, ReportsPage
 from .theme import QSS
 from .workers import Models, VideoWorker
 
 NAV = [("📷", CamerasPage), ("👥", ClassesPage), ("✅", AttendancePage), ("📈", DashboardPage),
-       ("🛡", ExamPage), ("📊", ReportsPage)]
+       ("🎓", ClassModePage), ("🛡", ExamPage), ("📊", ReportsPage)]
 
 
 class MainWindow(QMainWindow):
@@ -99,7 +99,8 @@ class MainWindow(QMainWindow):
         main.addWidget(self.stack, 1)
         outer.addLayout(main, 1)
 
-        self.cameras, self.classes, self.attendance, self.dashboard, self.exam, self.reports = self.pages
+        (self.cameras, self.classes, self.attendance, self.dashboard, self.classmode, self.exam,
+         self.reports) = self.pages
         self.classes_changed()
         self.go(0)
         QTimer.singleShot(300, self._check_models)
@@ -126,7 +127,7 @@ class MainWindow(QMainWindow):
 
     def classes_changed(self):
         classes = self.repo.list()
-        for name in ("attendance", "dashboard"):   # pages may still be under construction at startup
+        for name in ("attendance", "dashboard", "classmode"):   # pages may still be under construction at startup
             page = getattr(self, name, None)
             if page is not None:
                 page.refresh_classes(classes)
@@ -163,6 +164,7 @@ class MainWindow(QMainWindow):
         w.attendance_done.connect(self.attendance.on_done)
         w.incident.connect(self.exam.on_incident)
         w.people.connect(self.exam.on_frame_stats)
+        w.class_tick.connect(self.classmode.on_tick)
         w.finished.connect(self._worker_finished)
         self.worker = w
         self.cam_pill.setText(f"●  Connecting: {name}")
@@ -174,6 +176,8 @@ class MainWindow(QMainWindow):
             return
         if w.mode == "exam":
             self.exam.toggle()
+        elif w.mode == "class":
+            self.classmode.stop()
         w.stop()
         w.wait(3000)
 
@@ -209,6 +213,8 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             if self.worker.mode == "exam" and self.exam.incidents:
                 self.exam.save()
+            elif self.worker.mode == "class":
+                self.classmode.stop()
             self.worker.stop()
             self.worker.wait(3000)
         e.accept()

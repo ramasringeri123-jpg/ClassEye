@@ -69,7 +69,14 @@ class Settings:
     head_side_ratio: float = 0.40
     conceal_s: float = 1.2
     alert_repeat_s: float = 20.0
+    lap_phone_s: float = 3.0          # head bowed + hands together low for this long
+    reach_count: int = 2              # quick reaches to a hiding place within 90 s
+    hand_crops_per_frame: int = 2     # students whose hand area gets a close-up check per frame
     identify_every: int = 8           # frames between face identification passes
+
+    # class mode (attention)
+    sleep_s: float = 20.0             # head down and still this long = sleeping
+    attention_turn_ratio: float = 0.45  # head turned away from the board by this much = distracted
 
     @classmethod
     def load(cls) -> "Settings":

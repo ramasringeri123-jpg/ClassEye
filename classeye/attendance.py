@@ -6,12 +6,26 @@ Why it is accurate:
   * One face -> one student and one student -> one face in every frame.
   * Faces too small to recognise are counted so the teacher gets a warning
     instead of a silent wrong "Absent".
+
+Unknown people: a face that is clearly unlike EVERY student of the class is grouped
+with other sightings of the same face. Seen at least `unknown_min_sightings` times,
+it is reported as an "Unknown person" with a photo (a visitor, an outsider, or a
+student not enrolled in this class).
 """
 import time
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+
+@dataclass
+class Unknown:
+    vector: np.ndarray            # running mean face code
+    sightings: int = 1
+    first_seen: float = 0.0
+    snapshot: np.ndarray = None
+    face_px: int = 0
 
 
 @dataclass
@@ -26,7 +40,11 @@ class Mark:
 
 
 class AttendanceScan:
-    def __init__(self, classroom_name, gallery, students, threshold=0.40, margin=0.05, hits_needed=3):
+    UNKNOWN_GAP = 0.08            # must be this far BELOW the match threshold to count as unknown
+    SAME_PERSON = 0.42            # two unknown sightings this similar are the same person
+
+    def __init__(self, classroom_name, gallery, students, threshold=0.40, margin=0.05, hits_needed=3,
+                 unknown_min_sightings=5):
         self.classroom = classroom_name
         self.gallery = gallery
         self.threshold, self.margin, self.hits_needed = threshold, margin, hits_needed
@@ -37,6 +55,8 @@ class AttendanceScan:
         self.peak_faces = 0
         enrolled = {s.usn for s in gallery.students}
         self.marks = {s.usn: Mark(s.usn, s.name, s.usn in enrolled) for s in students}
+        self.unknown_min = unknown_min_sightings
+        self._unknowns = []
 
     def feed(self, frame, faces, now=None):
         """Update with one frame. Returns [(face, usn or None, similarity)] for drawing."""
@@ -80,7 +100,41 @@ class AttendanceScan:
                 m.snapshot = _crop(frame, face.box)
             result[usable[fi]] = (face, st.usn, s)
         self.unknown_faces += len(usable) - len(taken_face)
+        for fi in range(len(usable)):
+            if fi not in taken_face and top[fi] < self.threshold - self.UNKNOWN_GAP:
+                face = faces[usable[fi]]
+                self._add_unknown(frame, face, now)
+                result[usable[fi]] = (face, "UNKNOWN", float(top[fi]))
         return result
+
+    def _add_unknown(self, frame, face, now):
+        v = face.vector
+        best, best_sim = None, self.SAME_PERSON
+        for u in self._unknowns:
+            sim = float(np.dot(u.vector, v))
+            if sim >= best_sim:
+                best, best_sim = u, sim
+        size = min(face.box[2], face.box[3])
+        if best is None:
+            self._unknowns.append(Unknown(v.copy(), 1, now, _crop(frame, face.box), size))
+            return
+        mean = best.vector * best.sightings + v
+        best.vector = (mean / np.linalg.norm(mean)).astype(np.float32)
+        best.sightings += 1
+        if size > best.face_px:
+            best.snapshot, best.face_px = _crop(frame, face.box), size
+
+    def unknown_people(self):
+        """Repeatedly seen faces that match nobody in the class (best photo first)."""
+        out = []
+        for u in self._unknowns:
+            if u.sightings < self.unknown_min:
+                continue
+            # the averaged face is cleaner than single frames: drop it if it is really a student
+            if len(self.gallery) and float(self.gallery.best_per_student([u.vector])[0].max()) >= self.threshold:
+                continue
+            out.append(u)
+        return sorted(out, key=lambda u: u.first_seen)
 
     def is_present(self, mark):
         return mark.hits >= self.hits_needed
@@ -98,7 +152,8 @@ class AttendanceScan:
                 "percent": round(100 * p / total, 1) if total else 0.0,
                 "frames": self.frames, "unknown": self.unknown_faces,
                 "too_small": self.small_faces, "peak_faces": self.peak_faces,
-                "no_photo": sum(1 for m in self.marks.values() if not m.enrolled)}
+                "no_photo": sum(1 for m in self.marks.values() if not m.enrolled),
+                "unknown_people": len(self.unknown_people())}
 
 
 def _crop(frame, box, pad=0.4):

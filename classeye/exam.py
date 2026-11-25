@@ -5,9 +5,15 @@ Every frame:
   2. A tracker gives each student a stable ID, so behaviour can be timed.
   3. Behaviour rules (each must last a while, so a stretch or a glance is ignored):
 
-     PHONE        a mobile phone in or near a student's hands / desk area
+     PHONE        a mobile phone in or near a student's hands / desk area. Besides the
+                  whole-frame scan, a close-up of each student's hand area is checked
+                  (a few students per frame, in turn) so small phones are not missed.
+     PHONE_LAP    head bowed while both hands are held together low in the lap
+                  (the posture of reading a phone hidden under the desk)
      CHIT         a hand held at a hiding place: trouser pocket / waist, under the desk,
-                  inside the opposite sleeve, or inside the shirt / chest pocket
+                  inside the opposite sleeve, or inside the shirt / chest pocket;
+                  OR repeated quick reaches to a hiding place; OR paper seen in a hand
+                  that is at a hiding place
      TURN_BACK    student turns around (shoulders reversed, or face hidden while ears show)
      PEEP_FRONT   head pushed into the space of the student sitting in front
      SIDE_LOOK    head turned sideways far beyond that student's own normal posture
@@ -25,18 +31,20 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .detector import PHONE
+from .detector import BOOK, PHONE, Det
 from .tracking import Tracker
 
 NOSE, LEYE, REYE, LEAR, REAR, LSH, RSH, LEL, REL, LWR, RWR, LHIP, RHIP = range(13)
 
+# Every alert is a SUSPICION for the invigilator to check, never proof.
 RULES = {
-    "PHONE": ("Using a mobile phone", "High"),
-    "CHIT": ("Taking out a hidden chit / paper", "High"),
-    "PASSING": ("Passing something to a neighbour", "High"),
-    "TURN_BACK": ("Turning back", "Medium"),
-    "PEEP_FRONT": ("Looking into front student's paper", "Medium"),
-    "SIDE_LOOK": ("Looking at neighbour's paper", "Medium"),
+    "PHONE": ("Suspicious: mobile phone use", "High"),
+    "PHONE_LAP": ("Suspicious: looking at something hidden in lap (possible phone)", "High"),
+    "CHIT": ("Suspicious: taking out a hidden chit / paper", "High"),
+    "PASSING": ("Suspicious: passing something to a neighbour", "High"),
+    "TURN_BACK": ("Suspicious: turning back", "Medium"),
+    "PEEP_FRONT": ("Suspicious: looking into front student's paper", "Medium"),
+    "SIDE_LOOK": ("Suspicious: looking at neighbour's paper", "Medium"),
 }
 
 BONES = [(LSH, RSH), (LSH, LEL), (LEL, LWR), (RSH, REL), (REL, RWR), (LSH, LHIP), (RSH, RHIP), (LHIP, RHIP)]
@@ -90,6 +98,8 @@ class ExamMonitor:
         phones = []
         if self.objects is not None and "PHONE" in self.enabled:
             phones = self.objects(frame, classes={PHONE}, conf=self.s.object_conf)
+        if self.objects is not None and {"PHONE", "CHIT"} & self.enabled:
+            phones += self._hand_pass(frame, people, now)
         if self.gallery is not None and self.face is not None and \
                 self.frame_no % max(1, self.s.identify_every) == 1:
             self._identify(frame, people)
@@ -189,7 +199,9 @@ class ExamMonitor:
             self._loose_phone_since = None
         elif not holders and self._loose_phone_since and now - self._loose_phone_since >= self.s.phone_hold_s * self.k:
             out += self._report(frame, None, "PHONE", now - self._loose_phone_since, now)
-        for p in people:
+        for p in people:   # a phone seen in this student's hand close-up stays "seen" for 1.2 s
+            if now - p.memory.get("phone_seen", -1e9) < 1.2:
+                holders.add(p.id)
             hit, dur = self._held(p, "phone", p.id in holders, now, self.s.phone_hold_s)
             if hit:
                 out += self._report(frame, p, "PHONE", dur, now)
@@ -242,7 +254,7 @@ class ExamMonitor:
             out += self._report(frame, p, "PEEP_FRONT", dur, now)
 
         # ---- hand at a hiding place (pocket, waist, under desk, sleeve, shirt) ----
-        hiding = False
+        hiding_wrists = []
         lhip, rhip = self._pt(p, LHIP), self._pt(p, RHIP)
         sides = ((LWR, LHIP, REL, lhip), (RWR, RHIP, LEL, rhip))
         for wr_i, _hip_i, other_elbow_i, hip in sides:
@@ -250,19 +262,110 @@ class ExamMonitor:
             if wr is None:
                 continue
             other_elbow = self._pt(p, other_elbow_i)
+            hidden = False
             if hip is not None:
                 if self._dist(wr, hip) < 0.45 * sw and wr[1] > hip[1] - 0.2 * sw:   # pocket / waist
-                    hiding = True
+                    hidden = True
                 if wr[1] > hip[1] + 0.35 * sw:                                    # under the desk / legs
-                    hiding = True
+                    hidden = True
             if other_elbow is not None and self._dist(wr, other_elbow) < 0.3 * sw:  # inside the sleeve
-                hiding = True
+                hidden = True
             if neck[1] < wr[1] < neck[1] + 0.55 * sw and abs(wr[0] - neck[0]) < 0.35 * sw:  # inside shirt
-                hiding = True
+                hidden = True
+            if hidden:
+                hiding_wrists.append(wr)
+        hiding = bool(hiding_wrists)
+
+        # (a) a hand kept at a hiding place
         hit, dur = self._held(p, "chit", hiding, now, s.conceal_s)
         if hit:
             out += self._report(frame, p, "CHIT", dur, now)
+
+        # (b) paper seen next to a hand that is at a hiding place -> report almost at once
+        papers = [b for b, t in p.memory.get("papers", []) if now - t < 1.0]
+        paper_at_hand = any(self._dist(w, ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)) < 0.8 * sw
+                            for w in hiding_wrists for b in papers)
+        hit, dur = self._held(p, "chit_paper", paper_at_hand, now, 0.3)
+        if hit:
+            out += self._report(frame, p, "CHIT", dur, now)
+
+        # (c) repeated quick reaches to a hiding place (shorter than the hold time each)
+        r = p.memory.setdefault("reach", {"since": None, "times": []})
+        if hiding and r["since"] is None:
+            r["since"] = now
+        elif not hiding and r["since"] is not None:
+            if now - r["since"] >= 0.4 and (not r["times"] or now - r["times"][-1] > 2.0):
+                r["times"].append(now)
+            r["since"] = None
+        r["times"] = [t for t in r["times"] if now - t < 90]
+        if len(r["times"]) >= s.reach_count:
+            r["times"] = []
+            out += self._report(frame, p, "CHIT", 0.0, now)
+
+        # ---- possible phone hidden in the lap: head bowed + both hands together, low ----
+        lw, rw = self._pt(p, LWR), self._pt(p, RWR)
+        if nose is not None:
+            drop = (nose[1] - neck[1]) / sw                       # grows when the head bows
+            base = p.memory.get("upright", drop)
+            if drop < base:
+                base = 0.8 * base + 0.2 * drop
+            elif drop - base < 0.2:                    # only learn from near-upright postures
+                base = 0.99 * base + 0.01 * drop
+            p.memory["upright"] = base
+            bowed = drop - base > 0.3
+        else:
+            bowed = False
+        lap = False
+        if bowed and lw is not None and rw is not None and self._dist(lw, rw) < 0.7 * sw:
+            low = min(lw[1], rw[1]) > neck[1] + 1.4 * sw
+            hips = [h for h in (lhip, rhip) if h is not None]
+            if hips:
+                low = low or min(lw[1], rw[1]) > min(h[1] for h in hips) - 0.1 * sw
+            lap = low
+        hit, dur = self._held(p, "lap", lap and now - p.seen_since > 3, now, s.lap_phone_s)
+        if hit:
+            out += self._report(frame, p, "PHONE_LAP", dur, now)
         return out
+
+    # ------------------------------------------------------------------
+    def _hand_pass(self, frame, people, now):
+        """Close-up check of a few students' hand areas per frame for phones and paper.
+
+        A phone is only a few pixels wide in a full classroom frame; cropping around the
+        hands and running the detector on that crop makes it many times larger.
+        """
+        found = []
+        cands = [p for p in people if p.kpts is not None]
+        cands.sort(key=lambda p: p.memory.get("hand_checked", 0.0))
+        H, W = frame.shape[:2]
+        for p in cands[:max(0, self.s.hand_crops_per_frame)]:
+            p.memory["hand_checked"] = now
+            lsh, rsh = self._pt(p, LSH), self._pt(p, RSH)
+            x1, y1, x2, y2 = p.box
+            sw = abs(lsh[0] - rsh[0]) if lsh and rsh else (x2 - x1) * 0.5
+            wrists = [w for w in (self._pt(p, LWR), self._pt(p, RWR)) if w is not None]
+            if wrists:
+                cx = sum(w[0] for w in wrists) / len(wrists)
+                cy = sum(w[1] for w in wrists) / len(wrists)
+            else:
+                cx, cy = (x1 + x2) / 2, y1 + 0.7 * (y2 - y1)
+            half = max(2.4 * sw, 0.55 * (y2 - y1), 64) / 2
+            a, b = int(max(0, cx - half)), int(max(0, cy - half))
+            c, d = int(min(W, cx + half)), int(min(H, cy + half))
+            if c - a < 32 or d - b < 32:
+                continue
+            crop = frame[b:d, a:c]
+            dets = self.objects(crop, classes={PHONE, BOOK}, conf=max(0.15, self.s.object_conf - 0.08))
+            papers = [(bx, t) for bx, t in p.memory.get("papers", []) if now - t < 1.0]
+            for det in dets:
+                box = det.box + np.array([a, b, a, b], np.float32)
+                if det.cls == PHONE:
+                    p.memory["phone_seen"] = now
+                    found.append(Det(box, det.score, PHONE))
+                else:
+                    papers.append((box, now))
+            p.memory["papers"] = papers
+        return found
 
     def _passing_rule(self, frame, people, now):
         info = {}

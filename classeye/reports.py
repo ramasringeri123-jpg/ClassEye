@@ -111,11 +111,31 @@ def write_attendance(scan, folder, subject="", teacher=""):
             c = ab.cell(row=1 + i, column=j, value=v)
             c.border = BOX
 
+    unknown = scan.unknown_people() if hasattr(scan, "unknown_people") else []
+    if unknown:
+        ws["A4"] = f"⚠ {len(unknown)} unknown person(s) seen in class - see the 'Unknown persons' sheet"
+        ws["A4"].font = Font(bold=True, color="C0392B")
+    un = wb.create_sheet("Unknown persons")
+    _head(un, 1, ["#", "Photo", "First seen", "Times seen", "Note"], [5, 16, 14, 12, 46])
+    for i, u in enumerate(unknown, 1):
+        r = 1 + i
+        for j, v in enumerate([i, "", _clock(u.first_seen), u.sightings,
+                               "Not in this class's dataset - visitor, outsider or unenrolled student"], 1):
+            c = un.cell(row=r, column=j, value=v)
+            c.border, c.alignment = BOX, LEFT if j == 5 else MID
+        t = _thumb_file(u.snapshot, os.path.join(tmp_dir, f"unknown_{i}.png"), 80)
+        if t:
+            un.add_image(XLImage(t), f"B{r}")
+            un.row_dimensions[r].height = 64
+    if not unknown:
+        un.cell(row=2, column=1, value="No unknown persons were seen.")
+
     info = wb.create_sheet("Scan details")
     for i, (k, v) in enumerate([("Frames analysed", s["frames"]), ("Most faces in one frame", s["peak_faces"]),
                                 ("Unrecognised face sightings", s["unknown"]),
                                 ("Faces too small to recognise", s["too_small"]),
                                 ("Students without usable photo", s["no_photo"]),
+                                ("Unknown persons seen", s.get("unknown_people", 0)),
                                 ("Match threshold", scan.threshold),
                                 ("Recognitions needed for Present", scan.hits_needed)], 1):
         info.cell(row=i, column=1, value=k).font = BOLD
@@ -260,5 +280,58 @@ def write_shortage_report(class_name, rows, sessions, threshold, folder):
     for i, s in enumerate(sessions, 1):
         for j, v in enumerate([i, s["time"], s.get("subject", ""), len(s["present"]), len(s["absent"])], 1):
             hist.cell(row=1 + i, column=j, value=v).border = BOX
+    wb.save(path)
+    return path
+
+
+# =============================================================================
+def write_class_report(class_name, summary, timeline, folder, subject=""):
+    """Class Mode report: each student's attention %, time spent in each state, and a
+    minute-by-minute class attention chart."""
+    from openpyxl.chart import LineChart, Reference
+
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"Class_Attention_{_safe(class_name)}_{time.strftime('%Y-%m-%d_%H-%M')}.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attention"
+    ws["A1"] = f"{class_name} - Class attention report" + (f" - {subject}" if subject else "")
+    ws["A1"].font = Font(bold=True, size=15, color="1E2A4A")
+    ws["A2"] = (f"Date: {time.strftime('%d %b %Y')}    Lecture length: {summary['minutes']} min    "
+                f"Class attention: {summary['class_percent']}%")
+    ws["A2"].font = BOLD
+    ws["A3"] = "Approximate indicator from head direction and posture - for the teacher's reference, not a grade."
+    ws["A3"].font = Font(italic=True, color="6B7689")
+    _head(ws, 5, ["Sl", "USN", "Name", "Attention %", "Level", "Attentive (min)", "Writing (min)",
+                  "Distracted (min)", "Sleeping (min)", "Observed (min)"], [5, 15, 24, 12, 16, 14, 13, 15, 14, 14])
+    rows = sorted(summary["students"], key=lambda r: (r.usn == "", r.usn or r.key))
+    for i, r in enumerate(rows, 1):
+        mins = lambda k: round(r.by_state.get(k, 0.0) / 60, 1)  # noqa: E731
+        vals = [i, r.usn or "Not identified", r.name or r.key, r.percent, r.level, mins("Attentive"),
+                mins("Writing"), mins("Distracted") + mins("Away"), mins("Sleeping"), round(r.seconds / 60, 1)]
+        for j, v in enumerate(vals, 1):
+            c = ws.cell(row=5 + i, column=j, value=v)
+            c.border, c.alignment = BOX, LEFT if j == 3 else MID
+        lvl = ws.cell(row=5 + i, column=5)
+        lvl.fill = OK if r.level == "Good" else (WARN if r.level == "Average" else BAD)
+    ws.freeze_panes = "A6"
+    _print_wide(ws)
+
+    tl = wb.create_sheet("Timeline")
+    _head(tl, 1, ["Minute", "Class attention %"], [10, 18])
+    for i, (minute, pct) in enumerate(timeline, 2):
+        tl.cell(row=i, column=1, value=minute).border = BOX
+        tl.cell(row=i, column=2, value=pct).border = BOX
+    if len(timeline) >= 2:
+        chart = LineChart()
+        chart.title = "Class attention through the lecture"
+        chart.y_axis.title = "Attention %"
+        chart.x_axis.title = "Minute"
+        chart.y_axis.scaling.min, chart.y_axis.scaling.max = 0, 100
+        chart.height, chart.width = 9, 20
+        chart.add_data(Reference(tl, min_col=2, min_row=1, max_row=len(timeline) + 1), titles_from_data=True)
+        chart.set_categories(Reference(tl, min_col=1, min_row=2, max_row=len(timeline) + 1))
+        chart.legend = None
+        tl.add_chart(chart, "D2")
     wb.save(path)
     return path

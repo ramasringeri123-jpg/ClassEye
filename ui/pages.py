@@ -16,10 +16,10 @@ from PySide6.QtWidgets import (
 from classeye.cameras import parse_source
 from classeye.classrooms import FaceGallery, build_gallery, read_image
 from classeye.history import class_report, load_sessions, overview, record_session
-from classeye.reports import write_attendance, write_exam_report, write_shortage_report
+from classeye.reports import write_attendance, write_class_report, write_exam_report, write_shortage_report
 from classeye.settings import reports_dir
 from .widgets import Card, Stat, VideoView, muted, row
-from .workers import CameraScan, Job
+from .workers import CameraScan, Job, to_qimage
 
 
 def open_file(path):
@@ -405,7 +405,9 @@ class AttendancePage(QWidget):
         left.addWidget(self.video, 1)
         stats = QHBoxLayout()
         self.s_present, self.s_absent, self.s_total = Stat("Present"), Stat("Absent"), Stat("Students")
-        for s in (self.s_present, self.s_absent, self.s_total):
+        self.s_unknown = Stat("Unknown persons")
+        self.s_unknown.value.setStyleSheet("color:#C0392B;")
+        for s in (self.s_present, self.s_absent, self.s_total, self.s_unknown):
             stats.addWidget(s)
         left.addLayout(stats)
         lay.addLayout(left, 3)
@@ -443,6 +445,17 @@ class AttendancePage(QWidget):
         absent = Card("Absentees")
         self.absent_list = QListWidget()
         absent.body.addWidget(self.absent_list)
+        self.unknown_note = QLabel("")
+        self.unknown_note.setWordWrap(True)
+        self.unknown_note.setStyleSheet("background:#FBE5E3; color:#8E2B20; border-radius:6px; padding:6px 8px;"
+                                        " font-weight:600;")
+        self.unknown_note.hide()
+        absent.body.addWidget(self.unknown_note)
+        self.unknown_list = QListWidget()
+        self.unknown_list.setIconSize(QPixmap(64, 64).size())
+        self.unknown_list.setMaximumHeight(150)
+        self.unknown_list.hide()
+        absent.body.addWidget(self.unknown_list)
         self.open_btn = button("Open Excel report", "Primary", lambda: open_file(self.last_report))
         self.open_btn.setEnabled(False)
         absent.body.addWidget(self.open_btn)
@@ -464,7 +477,7 @@ class AttendancePage(QWidget):
             QMessageBox.information(self, "Attendance", "Connect a camera first (Cameras page).")
             return
         if w.mode != "preview":
-            QMessageBox.information(self, "Attendance", "Stop exam monitoring first.")
+            QMessageBox.information(self, "Attendance", "Stop exam monitoring / class mode first.")
             return
         cid = self.class_box.currentData()
         if not cid:
@@ -493,6 +506,10 @@ class AttendancePage(QWidget):
         self.s_total.set(len(students))
         self.s_present.set(0)
         self.s_absent.set(len(students))
+        self.s_unknown.set(0)
+        self.unknown_note.hide()
+        self.unknown_list.clear()
+        self.unknown_list.hide()
         w.begin_attendance(self.app.repo.get(cid).name, gallery, students, self.seconds.value())
         w.scan.class_id = cid
         self.stop_btn.setEnabled(True)
@@ -502,8 +519,9 @@ class AttendancePage(QWidget):
         if self.app.worker:
             self.app.worker.end_attendance()
 
-    def on_tick(self, frac, names):
+    def on_tick(self, frac, names, unknown=0):
         self.progress.setValue(int(frac * 100))
+        self.s_unknown.set(unknown)
         self.s_present.set(len(names))
         total = int(self.s_total.value.text() or 0)
         self.s_absent.set(max(0, total - len(names)))
@@ -521,6 +539,22 @@ class AttendancePage(QWidget):
         self.s_absent.set(s["absent"])
         self.absent_list.clear()
         self.absent_list.addItems([f"{m.usn}  ·  {m.name}" for m in sorted(scan.absent(), key=lambda m: m.usn)])
+        unknown = scan.unknown_people()
+        self.s_unknown.set(len(unknown))
+        self.unknown_list.clear()
+        if unknown:
+            self.unknown_note.setText(f"⚠ {len(unknown)} unknown person(s) in class - not in this class's dataset")
+            for i, u in enumerate(unknown, 1):
+                it = QListWidgetItem(f"Unknown person {i}  ·  first seen "
+                                     f"{time.strftime('%H:%M:%S', time.localtime(u.first_seen))}  ·  seen {u.sightings}x")
+                if u.snapshot is not None:
+                    it.setIcon(QIcon(QPixmap.fromImage(to_qimage(u.snapshot))))
+                self.unknown_list.addItem(it)
+            self.unknown_note.show()
+            self.unknown_list.show()
+        else:
+            self.unknown_note.hide()
+            self.unknown_list.hide()
         try:
             path, reg = write_attendance(scan, reports_dir(), self.subject.text().strip(),
                                          self.teacher.text().strip())
@@ -537,6 +571,8 @@ class AttendancePage(QWidget):
         note = ""
         if s["too_small"] > s["frames"]:
             note = "\n\nMany faces were too far away. Move the camera closer for better results."
+        if unknown:
+            note += f"\n\n⚠ {len(unknown)} UNKNOWN person(s) were in the class (photos in the report)."
         QMessageBox.information(self, "Attendance saved",
                                 f"{scan.classroom}: {s['present']} present, {s['absent']} absent "
                                 f"({s['percent']}%).\n\nSaved to {os.path.basename(path)}{note}")
@@ -622,8 +658,8 @@ class ExamPage(QWidget):
         if w is None:
             QMessageBox.information(self, "Exam", "Connect a camera first (Cameras page).")
             return
-        if w.mode == "attendance":
-            QMessageBox.information(self, "Exam", "Wait for the attendance scan to finish.")
+        if w.mode in ("attendance", "class"):
+            QMessageBox.information(self, "Exam", "Finish the attendance scan / class mode first.")
             return
         self.toggle_btn.setEnabled(False)
         self.app.toast("Loading exam AI models and all class photos...")
@@ -895,3 +931,157 @@ class DashboardPage(QWidget):
             return
         self.app.reports_changed()
         open_file(path)
+
+
+# =============================================================================
+class ClassModePage(QWidget):
+    title = "Class Mode"
+    LEVEL_COLORS = {"Good": "#1E8449", "Average": "#D68910", "Poor": "#C0392B", "Poor (sleeping)": "#C0392B"}
+    STATE_TEXT = {"Attentive": "👀 Attentive", "Writing": "✍ Writing / reading", "Distracted": "↔ Distracted",
+                  "Sleeping": "😴 Sleeping", "Away": "– Not visible"}
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.last_report = None
+        lay = QHBoxLayout(self)
+        lay.setSpacing(16)
+
+        left = QVBoxLayout()
+        self.video = VideoView("Connect a camera on the Cameras page")
+        left.addWidget(self.video, 1)
+        stats = QHBoxLayout()
+        self.s_class, self.s_people = Stat("Class attention"), Stat("Students watched")
+        self.s_sleep, self.s_time = Stat("Sleeping now"), Stat("Minutes")
+        self.s_sleep.value.setStyleSheet("color:#C0392B;")
+        for s in (self.s_class, self.s_people, self.s_sleep, self.s_time):
+            stats.addWidget(s)
+        left.addLayout(stats)
+        lay.addLayout(left, 3)
+
+        side = QVBoxLayout()
+        setup = Card("Lecture")
+        form = QFormLayout()
+        self.class_box = QComboBox()
+        self.subject = QLineEdit()
+        self.subject.setPlaceholderText("optional")
+        form.addRow("Class", self.class_box)
+        form.addRow("Subject", self.subject)
+        setup.body.addLayout(form)
+        self.toggle_btn = button("Start class mode", "Success", self.toggle)
+        setup.body.addWidget(self.toggle_btn)
+        setup.body.addWidget(muted("Estimates each student's attention from head direction and posture. "
+                                   "Approximate - a guide for the teacher, not a grade."))
+        side.addWidget(setup)
+
+        board = Card("Students (lowest attention first)")
+        self.table = table(["Student", "Attention", "Right now", "Level"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        board.body.addWidget(self.table, 1)
+        self.open_btn = button("Open attention report", "Primary", lambda: open_file(self.last_report))
+        self.open_btn.setEnabled(False)
+        board.body.addWidget(self.open_btn)
+        side.addWidget(board, 1)
+        lay.addLayout(side, 2)
+
+    def refresh_classes(self, classes):
+        cur = self.class_box.currentData()
+        self.class_box.clear()
+        for c in classes:
+            self.class_box.addItem(c.name, c.id)
+        i = self.class_box.findData(cur)
+        if i >= 0:
+            self.class_box.setCurrentIndex(i)
+
+    def running(self):
+        w = self.app.worker
+        return w is not None and w.mode == "class"
+
+    def toggle(self):
+        w = self.app.worker
+        if self.running():
+            self.stop()
+            return
+        if w is None:
+            QMessageBox.information(self, "Class mode", "Connect a camera first (Cameras page).")
+            return
+        if w.mode != "preview":
+            QMessageBox.information(self, "Class mode", "Finish the attendance scan / exam monitoring first.")
+            return
+        cid = self.class_box.currentData()
+        if not cid:
+            QMessageBox.information(self, "Class mode", "Create a class first (students are named from its photos).")
+            return
+        self.toggle_btn.setEnabled(False)
+        self.app.toast("Loading pose model and class photos...")
+        name = self.class_box.currentText()
+        self._job = Job(self._prepare, cid, name)
+        self._job.finished_ok.connect(self._begin)
+        self._job.failed.connect(lambda m: (QMessageBox.warning(self, "Class mode", m),
+                                            self.toggle_btn.setEnabled(True)))
+        self._job.start()
+
+    def _prepare(self, cid, name):
+        """Runs in a background thread - no widget access here."""
+        from classeye.attention import AttentionMonitor
+        pose, _ = self.app.models.ensure_exam()
+        face = self.app.models.ensure_face()
+        gallery = build_gallery(self.app.repo, cid, face)[0]
+        return AttentionMonitor(self.app.settings, pose, face, gallery, name)
+
+    def _begin(self, monitor):
+        self.toggle_btn.setEnabled(True)
+        w = self.app.worker
+        if w is None:
+            return
+        self.table.setRowCount(0)
+        for st in (self.s_class, self.s_people, self.s_sleep, self.s_time):
+            st.set(0)
+        w.begin_class(monitor)
+        self.toggle_btn.setText("Stop and save report")
+        self.toggle_btn.setObjectName("Danger")
+        self.toggle_btn.setStyle(self.toggle_btn.style())
+        self.app.set_live("CLASS")
+
+    def stop(self):
+        w = self.app.worker
+        mon = w.end_class() if w is not None else None
+        self.toggle_btn.setText("Start class mode")
+        self.toggle_btn.setObjectName("Success")
+        self.toggle_btn.setStyle(self.toggle_btn.style())
+        self.app.set_live(None)
+        if mon is None or mon.started is None:
+            return
+        summary = mon.summary()
+        if not summary["students"]:
+            QMessageBox.information(self, "Class mode", "No students were watched long enough for a report.")
+            return
+        try:
+            path = write_class_report(mon.class_name, summary, mon.timeline_rows(), reports_dir(),
+                                      self.subject.text().strip())
+        except PermissionError:
+            QMessageBox.warning(self, "Class mode", "Close the Excel file that is open, then try again.")
+            return
+        self.last_report = path
+        self.open_btn.setEnabled(True)
+        self.app.reports_changed()
+        poor = [r for r in summary["students"] if r.level.startswith("Poor")]
+        QMessageBox.information(self, "Class mode", f"Class attention: {summary['class_percent']}% over "
+                                f"{summary['minutes']} min.\n{len(poor)} student(s) with poor attention.\n\n"
+                                f"Saved to {os.path.basename(path)}")
+
+    def on_tick(self, summary):
+        self.s_class.set(f"{summary['class_percent']:.0f}%")
+        self.s_people.set(summary["people_now"])
+        self.s_sleep.set(summary["sleeping_now"])
+        self.s_time.set(summary["minutes"])
+        rows = summary["students"]
+        self.table.setRowCount(len(rows))
+        for r, st in enumerate(rows):
+            who = f"{st.usn}  ·  {st.name}" if st.usn else f"Not identified ({st.key})"
+            vals = [who, f"{st.percent:.0f}%", self.STATE_TEXT.get(st.state, st.state), st.level]
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                if j in (1, 3):
+                    it.setForeground(QColor(self.LEVEL_COLORS.get(st.level, "#1B2333")))
+                self.table.setItem(r, j, it)

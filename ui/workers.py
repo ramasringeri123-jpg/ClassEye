@@ -92,10 +92,11 @@ class VideoWorker(QThread):
     fps = Signal(float)
     status = Signal(str)
     failed = Signal(str)
-    attendance_tick = Signal(float, list)     # progress 0..1, present names
+    attendance_tick = Signal(float, list, int)   # progress 0..1, present names, unknown persons
     attendance_done = Signal(object)          # AttendanceScan
     incident = Signal(object)                 # exam Incident
     people = Signal(int)                      # students currently tracked in exam mode
+    class_tick = Signal(object)               # class-mode summary (about twice a second)
 
     def __init__(self, models, source, settings):
         super().__init__()
@@ -126,6 +127,15 @@ class VideoWorker(QThread):
     def begin_exam(self, monitor):
         self.monitor = monitor
         self.mode = "exam"
+
+    def begin_class(self, monitor):
+        self.attention = monitor
+        self._last_class_tick = 0.0
+        self.mode = "class"
+
+    def end_class(self):
+        self.mode = "preview"
+        return getattr(self, "attention", None)
 
     def end_exam(self):
         self.mode = "preview"
@@ -169,7 +179,9 @@ class VideoWorker(QThread):
             faces = self.models.face.detect(img)
             for face, usn, sim in self.scan.feed(img, faces):
                 x, y, w, h = face.box
-                if usn:
+                if usn == "UNKNOWN":
+                    color, text = (60, 60, 230), "UNKNOWN PERSON"
+                elif usn:
                     color, text = (113, 191, 47), f"{usn}  {int(sim * 100)}%"
                 elif face.vector is None:
                     color, text = (36, 165, 245), "too far"
@@ -180,7 +192,8 @@ class VideoWorker(QThread):
                 cv2.putText(img, text, (x + 3, y - 5 * th), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * th, (255, 255, 255), th)
             elapsed = time.time() - self.scan_start
             self.attendance_tick.emit(min(1.0, elapsed / max(1, self.scan_seconds)),
-                                      [f"{m.usn}  ·  {m.name}" for m in self.scan.present()])
+                                      [f"{m.usn}  ·  {m.name}" for m in self.scan.present()],
+                                      len(self.scan.unknown_people()))
             if elapsed >= self.scan_seconds:
                 self.end_attendance()
         elif self.mode == "exam" and self.monitor is not None:
@@ -188,6 +201,11 @@ class VideoWorker(QThread):
             self.people.emit(self.monitor.people_now)
             for inc in new:
                 self.incident.emit(inc)
+        elif self.mode == "class" and getattr(self, "attention", None) is not None:
+            img, summary = self.attention.process(img)
+            if time.time() - self._last_class_tick >= 0.5:
+                self._last_class_tick = time.time()
+                self.class_tick.emit(summary)
         elif self.show_faces and self.models.face is not None:
             for f in self.models.face.detect(img, with_vectors=False):
                 x, y, w, h = f.box

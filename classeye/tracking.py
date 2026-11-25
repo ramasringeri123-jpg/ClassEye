@@ -30,7 +30,14 @@ class Person:
 
     def update(self, det):
         self.box = 0.65 * np.asarray(det.box, np.float32) + 0.35 * self.box
-        self.kpts = det.kpts
+        k = det.kpts
+        if k is not None and self.kpts is not None:
+            # smooth keypoints that are confident in both frames: less jitter -> fewer
+            # flickering rules and fewer false alerts
+            k = k.copy()
+            both = (k[:, 2] >= 0.3) & (self.kpts[:, 2] >= 0.3)
+            k[both, :2] = 0.6 * k[both, :2] + 0.4 * self.kpts[both, :2]
+        self.kpts = k
         self.lost = 0
 
     def vote(self, student, score):
